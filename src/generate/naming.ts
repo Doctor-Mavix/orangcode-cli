@@ -58,6 +58,14 @@ export function enumConstName(enumName: string): string {
   return [...parts.slice(0, -1), pluralize(last)].map((word) => word.toUpperCase()).join('_');
 }
 
+/** `complaint` → `complaints`, `wallet-transfer` → `wallet-transfers`: URL/file segment. */
+export function kebabPlural(name: string): string {
+  const parts = name.split('-');
+  const last = parts.at(-1) ?? name;
+
+  return [...parts.slice(0, -1), pluralize(last)].join('-');
+}
+
 /** `ComplaintEvent` → `complaint_events`: plural snake_case table/collection name. */
 export function tableName(entityName: string): string {
   const parts = words(entityName).map((word) => word.toLowerCase());

@@ -4,7 +4,15 @@
     "name": "complaint",
     "supportedProviders": "both",
     "transactionalGroup": null,
-    "dependsOn": ["notification"],
+    "dependsOn": [
+      {
+        "name": "notification",
+        "doc": [
+          "The service notifies on every submission, so a container without the notification module",
+          "would only fail when the controller is instantiated, with a token nobody can trace back."
+        ]
+      }
+    ],
     "softDeleteModels": ["Complaint"]
   },
   "enums": {
@@ -100,7 +108,10 @@
     "extraFinders": [{ "name": "findByTrackingNumber", "by": "trackingNumber" }],
     "filter": ["status", "category"],
     "createOmits": ["status", "assignedTo", "resolvedAt"],
-    "patch": ["status", "priority", "assignedTo", "resolvedAt"]
+    "patch": ["status", "priority", "assignedTo", "resolvedAt"],
+    "docs": {
+      "emptyPatch": "MongoDB rejects an empty $set, and adding a note changes no field of the case itself."
+    }
   },
   "inputs": {
     "createComplaint": {
@@ -187,19 +198,33 @@
       }
     }
   },
+  "controller": {
+    "doc": [
+      "Two audiences in one controller. The citizen routes are `@Public()` because a complaint can",
+      "be filed anonymously — that is the point of the module — and what they can reach is bounded",
+      "by holding a secret they were given: the tracking number, or the id of the case they just",
+      "created. Everything that reads or changes a case belongs to `@Roles('admin')`."
+    ]
+  },
   "routes": [
     {
       "method": "post",
       "path": "/",
       "access": "public",
       "input": "createComplaint",
-      "status": 201
+      "status": 201,
+      "handler": "submit",
+      "locale": true,
+      "envelope": {
+        "message": "Complaint registered. Keep the tracking number {trackingNumber}."
+      }
     },
     {
       "method": "get",
       "path": "/track/:trackingNumber",
       "access": "public",
-      "params": "trackingNumberParams"
+      "params": "trackingNumberParams",
+      "returns": { "type": "ComplaintPublicView", "from": "views" }
     },
     {
       "method": "get",
@@ -212,25 +237,31 @@
       "method": "get",
       "path": "/export.csv",
       "access": { "roles": ["admin"] },
-      "query": "exportComplaints"
+      "query": "exportComplaints",
+      "csvExport": true
     },
     {
       "method": "get",
       "path": "/:id",
       "access": { "roles": ["admin"] },
-      "params": "complaintIdParams"
+      "params": "complaintIdParams",
+      "serviceMethod": "getById"
     },
     {
       "method": "post",
       "path": "/:id/attachments",
       "access": "public",
-      "params": "complaintIdParams"
+      "params": "complaintIdParams",
+      "handler": "addAttachment",
+      "serviceMethod": "attach",
+      "upload": { "field": "file" }
     },
     {
       "method": "get",
       "path": "/:id/attachments",
       "access": { "roles": ["admin"] },
-      "params": "complaintIdParams"
+      "params": "complaintIdParams",
+      "returns": { "type": "Attachment[]", "from": "service" }
     },
     {
       "method": "post",
@@ -238,28 +269,35 @@
       "access": { "roles": ["admin"] },
       "params": "complaintIdParams",
       "input": "changeStatus",
-      "status": 200
+      "status": 200,
+      "handler": "changeStatus",
+      "envelope": {
+        "statusDoc": "A status change updates an existing case, so 200 rather than the POST default of 201."
+      }
     },
     {
       "method": "post",
       "path": "/:id/notes",
       "access": { "roles": ["admin"] },
       "params": "complaintIdParams",
-      "input": "addNote"
+      "input": "addNote",
+      "handler": "addNote"
     },
     {
       "method": "patch",
       "path": "/:id/assignee",
       "access": { "roles": ["admin"] },
       "params": "complaintIdParams",
-      "input": "assignComplaint"
+      "input": "assignComplaint",
+      "handler": "assign"
     },
     {
       "method": "patch",
       "path": "/:id/priority",
       "access": { "roles": ["admin"] },
       "params": "complaintIdParams",
-      "input": "setPriority"
+      "input": "setPriority",
+      "handler": "setPriority"
     },
     {
       "method": "delete",

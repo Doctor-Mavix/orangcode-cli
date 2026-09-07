@@ -93,12 +93,36 @@ export function jsdoc(doc: BlueprintDoc, indent = ''): string {
     return `${indent}/** ${doc} */`;
   }
 
-  return [`${indent}/**`, ...doc.map((line) => `${indent} * ${line}`), `${indent} */`].join('\n');
+  return [
+    `${indent}/**`,
+    ...doc.map((line) => (line === '' ? `${indent} *` : `${indent} * ${line}`)),
+    `${indent} */`,
+  ].join('\n');
 }
 
 export function docLines(doc: BlueprintDoc): string[] {
   return typeof doc === 'string' ? [doc] : doc;
 }
 
+/** `ComplaintEvent` under `Complaint` → `Event`; a name sharing no prefix is kept whole. */
+export function shortEntityName(name: string, parentName: string): string {
+  return name.startsWith(parentName) && name !== parentName ? name.slice(parentName.length) : name;
+}
+
 /** Prettier's print width — the emitters break lines exactly where it would. */
 export const PRINT_WIDTH = 100;
+
+/** One import statement, broken one name per line when the inline form would overflow. */
+export function formatImport(
+  keyword: 'import' | 'import type',
+  names: string[],
+  path: string,
+): string {
+  const inline = `${keyword} { ${names.join(', ')} } from '${path}';`;
+
+  if (inline.length <= PRINT_WIDTH) {
+    return inline;
+  }
+
+  return [`${keyword} {`, ...names.map((name) => `  ${name},`), `} from '${path}';`].join('\n');
+}
