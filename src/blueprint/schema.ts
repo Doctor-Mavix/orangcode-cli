@@ -43,11 +43,16 @@ const fieldSchema = z.strictObject({
   minLength: z.number().int().nonnegative().optional(),
 });
 
+const columnListSchema = z.array(z.array(z.string().min(1)).min(1)).optional();
+
 const entitySchema = z.strictObject({
   fields: z.record(z.string().min(1), fieldSchema),
   timestamps: z.boolean().optional(),
   softDelete: z.boolean().optional(),
-  indexes: z.array(z.array(z.string().min(1))).optional(),
+  indexes: columnListSchema,
+  // Composite unique constraints, e.g. [["actorId", "currency"]] — a plain index cannot
+  // arbitrate the race a unique does (proj_fintech wallet, insight 20).
+  uniques: columnListSchema,
 });
 
 const moduleSchema = z.strictObject({
@@ -76,7 +81,11 @@ const repositorySchema = z.strictObject({
 const routeSchema = z.strictObject({
   method: z.enum(['get', 'post', 'patch', 'put', 'delete']),
   path: z.string().min(1),
-  access: z.union([z.literal('public'), z.strictObject({ roles: z.array(z.string().min(1)) })]),
+  // Absent means "authenticated, no specific role" — the template's protected-by-default
+  // stance: opening a route to the world must be spelled out, never implied.
+  access: z
+    .union([z.literal('public'), z.strictObject({ roles: z.array(z.string().min(1)) })])
+    .optional(),
   stepUp: z.boolean().optional(),
   input: z.string().min(1).optional(),
   status: z.number().int().optional(),
@@ -119,6 +128,27 @@ export const blueprintSchema = blueprintShape.superRefine((blueprint, ctx) => {
             (enumNames.length > 0 ? ` (declared enums: ${enumNames.join(', ')}).` : '.'),
         });
       }
+    }
+
+    const knownColumns = new Set([
+      'id',
+      ...Object.keys(entity.fields),
+      ...(entity.timestamps === true ? ['createdAt', 'updatedAt'] : []),
+      ...(entity.softDelete === true ? ['deletedAt'] : []),
+    ]);
+
+    for (const kind of ['indexes', 'uniques'] as const) {
+      (entity[kind] ?? []).forEach((columns, group) => {
+        columns.forEach((column, position) => {
+          if (!knownColumns.has(column)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['entities', entityName, kind, group, position],
+              message: `"${column}" is not a field of entity "${entityName}". Declare it under "fields" or fix the ${kind === 'uniques' ? 'unique constraint' : 'index'}.`,
+            });
+          }
+        });
+      });
     }
   }
 

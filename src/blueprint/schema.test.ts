@@ -196,6 +196,51 @@ describe('blueprintSchema', () => {
 
       expect(failurePaths(blueprint)).toContain('repository.extraFinders[0].by');
     });
+
+    it('accepts a composite unique over declared fields', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!['uniques'] = [['trackingNumber', 'status']];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+    });
+
+    it('rejects an index or unique on a column no entity declares', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!['uniques'] = [['actorId', 'currency']];
+      blueprint.entities['Complaint']!['indexes'] = [['ghost']];
+
+      const paths = failurePaths(blueprint);
+      expect(paths).toContain('entities.Complaint.uniques[0][0]');
+      expect(paths).toContain('entities.Complaint.uniques[0][1]');
+      expect(paths).toContain('entities.Complaint.indexes[0][0]');
+    });
+
+    it('accepts an index on deletedAt when the entity is soft-deleted', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!['indexes'] = [['status', 'deletedAt']];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+    });
+
+    it('rejects a timestamps column in an index when timestamps are off', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!['timestamps'] = false;
+
+      // The base blueprint indexes createdAt, which only exists through timestamps.
+      expect(failurePaths(blueprint)).toContain('entities.Complaint.indexes[0][1]');
+    });
+  });
+
+  it('treats a route without access as authenticated, and keeps it valid', () => {
+    const blueprint = baseBlueprint();
+    blueprint.routes = [{ method: 'get', path: '/:id' }];
+
+    const result = blueprintSchema.safeParse(blueprint);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.routes[0]?.access).toBeUndefined();
+    }
   });
 });
 
