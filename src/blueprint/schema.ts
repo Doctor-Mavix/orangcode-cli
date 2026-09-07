@@ -115,6 +115,16 @@ const entitySchema = z.strictObject({
     .optional(),
 });
 
+/**
+ * A module this one refuses to boot without. The optional `doc` is rendered as the comment
+ * above the container check in the generated `<module>.module.ts`, so the *reason* for the
+ * dependency travels with the module instead of living in one developer's head.
+ */
+const dependencySchema = z.union([
+  z.string().min(1),
+  z.strictObject({ name: z.string().min(1), doc: docSchema.optional() }),
+]);
+
 const moduleSchema = z.strictObject({
   name: z
     .string()
@@ -126,7 +136,7 @@ const moduleSchema = z.strictObject({
     .optional(),
   supportedProviders: z.enum(['both', 'sql', 'mongo']),
   transactionalGroup: z.string().min(1).nullable(),
-  dependsOn: z.array(z.string().min(1)),
+  dependsOn: z.array(dependencySchema),
   softDeleteModels: z.array(z.string().min(1)),
 });
 
@@ -174,6 +184,13 @@ const repositorySchema = z.strictObject({
   createOmits: z.array(z.string().min(1)).optional(),
   /** The only root-entity fields `update` may touch — the shape of `<Entity>Patch`. */
   patch: z.array(z.string().min(1)).optional(),
+  /** Named prose slots rendered at fixed spots of the generated repository implementations. */
+  docs: z
+    .strictObject({
+      /** Why `update` may be called with an empty patch (the Mongo impl skips the `$set`). */
+      emptyPatch: docSchema.optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -204,6 +221,17 @@ const inputSchema = z.strictObject({
   fields: z.record(z.string().min(1), inputFieldSchema),
 });
 
+/**
+ * What the generated handler returns. The shorthands cover the mechanical cases; the object
+ * form names a type that lives in a hand-written file of the module — `views` resolves to
+ * `types/<module>.views.ts`, `service` to `services/<module>.service.ts` (a `[]` suffix on
+ * `type` is kept as written).
+ */
+const routeReturnsSchema = z.union([
+  z.enum(['detail', 'void']),
+  z.strictObject({ type: z.string().min(1), from: z.enum(['views', 'service']) }),
+]);
+
 const routeSchema = z.strictObject({
   method: z.enum(['get', 'post', 'patch', 'put', 'delete']),
   path: z.string().min(1),
@@ -218,6 +246,30 @@ const routeSchema = z.strictObject({
   params: z.string().min(1).optional(),
   status: z.number().int().optional(),
   pagination: z.boolean().optional(),
+  /** Controller (and, by default, service) method name; derived from method+path when absent. */
+  handler: z.string().min(1).optional(),
+  /** Service method to delegate to when it is not simply named after the handler. */
+  serviceMethod: z.string().min(1).optional(),
+  /** JSDoc above the generated handler; replaces the feature boilerplate when both apply. */
+  doc: docSchema.optional(),
+  returns: routeReturnsSchema.optional(),
+  /**
+   * Wraps the result in the `ApiPayload` envelope. `message` is a template over the returned
+   * root entity (`{trackingNumber}` → its column); `statusDoc` is the comment justifying a
+   * non-default HTTP status (the status itself is the route's `status` field).
+   */
+  envelope: z
+    .strictObject({
+      message: z.string().min(1).optional(),
+      statusDoc: docSchema.optional(),
+    })
+    .optional(),
+  /** Passes the resolved Accept-Language locale to the service as a trailing argument. */
+  locale: z.boolean().optional(),
+  /** Single-file multipart upload handled by the media kit; `field` names the form part. */
+  upload: z.strictObject({ field: z.string().min(1) }).optional(),
+  /** Streams the filtered root collection as CSV straight into the response. */
+  csvExport: z.boolean().optional(),
 });
 
 function referenceName(type: string, prefix: 'enum:' | 'alias:'): string | null {
@@ -245,6 +297,8 @@ const blueprintShape = z.strictObject({
   stateMachine: stateMachineSchema.optional(),
   repository: repositorySchema,
   inputs: z.record(z.string().min(1), inputSchema).optional(),
+  /** Controller-level prose: `doc` becomes the JSDoc of the generated controller class. */
+  controller: z.strictObject({ doc: docSchema.optional() }).optional(),
   routes: z.array(routeSchema),
   kit: z.array(z.string().min(1)),
   /** Event name → payload shape, augmenting the shared `RealtimeEvents` interface. */
@@ -360,6 +414,16 @@ export function finderFields(by: string | string[]): string[] {
   return Array.isArray(by) ? by : [by];
 }
 
+/** A dependency's module name, whether declared as a bare string or a documented object. */
+export function dependencyName(dependency: BlueprintDependency): string {
+  return typeof dependency === 'string' ? dependency : dependency.name;
+}
+
+/** The prose attached to a dependency, when its object form carries one. */
+export function dependencyDoc(dependency: BlueprintDependency): BlueprintDoc | undefined {
+  return typeof dependency === 'string' ? undefined : dependency.doc;
+}
+
 function knownColumnsOf(entity: BlueprintShape['entities'][string]): Set<string> {
   return new Set([
     'id',
@@ -448,10 +512,75 @@ function checkInputs(blueprint: BlueprintShape, ctx: z.RefinementCtx): void {
 
 const ROUTE_INPUT_KINDS = { input: 'body', query: 'query', params: 'params' } as const;
 
+const MESSAGE_PLACEHOLDER = /\{([A-Za-z0-9_]+)\}/g;
+
 function checkRoutes(blueprint: BlueprintShape, ctx: z.RefinementCtx): void {
   const inputs = blueprint.inputs ?? {};
+  const rootName = rootEntityName(blueprint);
+  const root = rootName === null ? undefined : blueprint.entities[rootName];
+  const rootColumns = root === undefined ? new Set<string>() : knownColumnsOf(root);
+  const handlerOwners = new Map<string, number>();
 
   blueprint.routes.forEach((route, index) => {
+    if (route.handler !== undefined) {
+      const owner = handlerOwners.get(route.handler);
+
+      if (owner === undefined) {
+        handlerOwners.set(route.handler, index);
+      } else {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'handler'],
+          message: `Handler "${route.handler}" is already used by routes[${owner}] — controller method names must be unique.`,
+        });
+      }
+    }
+
+    if (route.upload !== undefined && !blueprint.kit.includes('media')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['routes', index, 'upload'],
+        message: 'An upload route is served by the media kit — add "media" to "kit".',
+      });
+    }
+
+    if (route.upload !== undefined && route.input !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['routes', index, 'input'],
+        message:
+          'A multipart route has no JSON body to validate — drop "input" (multer owns the body).',
+      });
+    }
+
+    if (route.csvExport === true && !blueprint.kit.includes('csv-export')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['routes', index, 'csvExport'],
+        message: 'A CSV export route is served by the csv-export kit — add "csv-export" to "kit".',
+      });
+    }
+
+    if (route.csvExport === true && route.pagination === true) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['routes', index, 'csvExport'],
+        message: 'A CSV export pages through the whole set itself — it cannot also be paginated.',
+      });
+    }
+
+    for (const match of route.envelope?.message?.matchAll(MESSAGE_PLACEHOLDER) ?? []) {
+      const placeholder = match[1] ?? '';
+
+      if (!rootColumns.has(placeholder)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'envelope', 'message'],
+          message: `"{${placeholder}}" is not a column of the root entity${rootName === null ? '' : ` "${rootName}"`} — an envelope message can only quote the returned row.`,
+        });
+      }
+    }
+
     for (const [routeKey, expectedKind] of Object.entries(ROUTE_INPUT_KINDS) as [
       keyof typeof ROUTE_INPUT_KINDS,
       (typeof ROUTE_INPUT_KINDS)[keyof typeof ROUTE_INPUT_KINDS],
@@ -562,6 +691,8 @@ export type BlueprintEntity = Blueprint['entities'][string];
 export type BlueprintField = BlueprintEntity['fields'][string];
 export type BlueprintInput = NonNullable<Blueprint['inputs']>[string];
 export type BlueprintInputField = BlueprintInput['fields'][string];
+export type BlueprintRoute = Blueprint['routes'][number];
+export type BlueprintDependency = Blueprint['module']['dependsOn'][number];
 export type BlueprintDoc = string | string[];
 
 /** `['entities', 'Complaint', 'fields', 0]` → `entities.Complaint.fields[0]`. */

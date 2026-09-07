@@ -23,7 +23,9 @@ interface TestBlueprint {
     createOmits?: string[];
     patch?: string[];
     defaultOrder?: string[];
+    docs?: Record<string, unknown>;
   };
+  controller?: Record<string, unknown>;
   inputs?: Record<
     string,
     { kind: string; fields: Record<string, Record<string, unknown>> } & Record<string, unknown>
@@ -444,6 +446,105 @@ describe('blueprintSchema', () => {
     if (result.success) {
       expect(result.data.routes[0]?.access).toBeUndefined();
     }
+  });
+
+  describe('module-wave vocabulary', () => {
+    it('accepts a documented dependency and keeps the bare string form', () => {
+      const blueprint = baseBlueprint();
+      blueprint.module['dependsOn'] = [
+        'audit',
+        { name: 'notification', doc: ['Why line one.', 'Why line two.'] },
+      ];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.module['dependsOn'] = [{ doc: 'orphan doc' }];
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(false);
+    });
+
+    it('accepts controller.doc, repository.docs.emptyPatch and route prose slots', () => {
+      const blueprint = baseBlueprint();
+      blueprint.controller = { doc: 'One controller, two audiences.' };
+      blueprint.repository.docs = { emptyPatch: 'MongoDB rejects an empty $set.' };
+      blueprint.routes[0] = {
+        ...blueprint.routes[0],
+        handler: 'submit',
+        serviceMethod: 'open',
+        doc: 'Prose above the handler.',
+        locale: true,
+        envelope: { message: 'Saved {trackingNumber}.', statusDoc: 'Why this status.' },
+      };
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+    });
+
+    it('rejects two routes claiming the same handler name', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [
+        { method: 'post', path: '/', input: 'createComplaint', handler: 'submit' },
+        { method: 'get', path: '/', pagination: true, handler: 'submit' },
+      ];
+
+      expect(failurePaths(blueprint)).toContain('routes[1].handler');
+    });
+
+    it('rejects an upload route without the media kit or with a JSON body', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [{ method: 'post', path: '/:id/files', upload: { field: 'file' } }];
+
+      expect(failurePaths(blueprint)).toContain('routes[0].upload');
+
+      blueprint.kit = ['media'];
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.routes = [
+        { method: 'post', path: '/', input: 'createComplaint', upload: { field: 'file' } },
+      ];
+      expect(failurePaths(blueprint)).toContain('routes[0].input');
+    });
+
+    it('rejects a csv export without its kit or combined with pagination', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [{ method: 'get', path: '/export.csv', csvExport: true }];
+
+      expect(failurePaths(blueprint)).toContain('routes[0].csvExport');
+
+      blueprint.kit = ['csv-export'];
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.routes = [
+        { method: 'get', path: '/export.csv', csvExport: true, pagination: true },
+      ];
+      expect(failurePaths(blueprint)).toContain('routes[0].csvExport');
+    });
+
+    it('rejects an envelope message quoting a column the root entity does not have', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [
+        {
+          method: 'post',
+          path: '/',
+          input: 'createComplaint',
+          envelope: { message: 'Keep {ghostColumn} safe.' },
+        },
+      ];
+
+      expect(failurePaths(blueprint)).toContain('routes[0].envelope.message');
+    });
+
+    it('accepts both returns shorthands and the named-type form', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [
+        { method: 'delete', path: '/:id', returns: 'void' },
+        { method: 'get', path: '/:id', returns: 'detail' },
+        { method: 'get', path: '/', returns: { type: 'ComplaintView[]', from: 'views' } },
+      ];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.routes = [{ method: 'get', path: '/', returns: { type: 'X', from: 'elsewhere' } }];
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(false);
+    });
   });
 });
 
