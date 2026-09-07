@@ -1,4 +1,5 @@
 import type { Blueprint, BlueprintField } from '../blueprint/schema';
+import { parseOrderedColumn } from '../blueprint/schema';
 import type { EntityView, OwnedChildView } from './model';
 import { PRINT_WIDTH, jsdoc, ownedChildren, rootEntity, tsFieldType, tsType } from './model';
 import { camelCase, enumConstName, tableName } from './naming';
@@ -239,7 +240,14 @@ function footerSections(root: EntityView): string[] {
 
   for (const columns of root.entity.indexes ?? []) {
     const rendered = columns
-      .map((column) => (column === 'createdAt' ? 'createdAt: -1' : `${column}: 1`))
+      .map((ref) => {
+        const { column, direction } = parseOrderedColumn(ref);
+        // Same keyset convention as the Prisma emitter when no direction is spelled out.
+        const sort =
+          direction === null ? (column === 'createdAt' ? -1 : 1) : direction === 'desc' ? -1 : 1;
+
+        return `${column}: ${sort}`;
+      })
       .join(', ');
     statements.push(`${schemaName}.index({ ${rendered} });`);
   }

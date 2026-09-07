@@ -198,6 +198,8 @@ function buildChain(
     segments.push(`enum(${enumConstName(field.type.slice('enum:'.length))})`);
   } else if (field.type === 'email') {
     segments.push('email()');
+  } else if (field.type === 'url') {
+    segments.push('url()');
   } else if (field.type === 'date') {
     head = 'z.coerce';
     segments.push('date()');

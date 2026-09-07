@@ -1,4 +1,5 @@
 import type { Blueprint, BlueprintField } from '../blueprint/schema';
+import { finderFields } from '../blueprint/schema';
 import type { EntityView, OwnedChildView } from './model';
 import { PRINT_WIDTH, ownedChildren, rootEntity, tsFieldType, tsType } from './model';
 import { humanize, upperSnakeCase } from './naming';
@@ -163,11 +164,12 @@ function repositoryInterface(
   }
 
   for (const finder of extraFinders) {
-    const field = findField(blueprint, finder.by);
-    const paramType = field === undefined ? 'string' : tsType(field);
-    lines.push(
-      ...method(finder.name, [`${finder.by}: ${paramType}`], `Promise<${detailType} | null>`),
-    );
+    const params = finderFields(finder.by).map((fieldName) => {
+      const field = findField(blueprint, fieldName);
+
+      return `${fieldName}: ${field === undefined ? 'string' : tsType(field)}`;
+    });
+    lines.push(...method(finder.name, params, `Promise<${detailType} | null>`));
   }
 
   if (operations.includes('list')) {

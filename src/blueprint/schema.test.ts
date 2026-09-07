@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { blueprintSchema, formatIssuePath } from './schema';
+import { blueprintSchema, finderFields, formatIssuePath, parseOrderedColumn } from './schema';
 
 /** Loose mirror of the blueprint shape so tests can corrupt any part of it without casts. */
 interface TestBlueprint {
@@ -18,10 +18,11 @@ interface TestBlueprint {
   };
   repository: {
     operations: string[];
-    extraFinders: { name: string; by: string }[];
+    extraFinders: { name: string; by: string | string[] }[];
     filter: string[];
     createOmits?: string[];
     patch?: string[];
+    defaultOrder?: string[];
   };
   inputs?: Record<
     string,
@@ -357,6 +358,82 @@ describe('blueprintSchema', () => {
     });
   });
 
+  describe('expressivity extensions (insight 20 §8)', () => {
+    it('accepts the url field type in entities and inputs', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!.fields['website'] = { type: 'url', nullable: true };
+      blueprint.inputs!['createComplaint']!.fields['website'] = { type: 'url', optional: true };
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+    });
+
+    it('accepts a multi-field finder and rejects one over an unknown field', () => {
+      const blueprint = baseBlueprint();
+      blueprint.repository.extraFinders = [
+        { name: 'findByOwner', by: ['trackingNumber', 'status'] },
+      ];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.repository.extraFinders = [
+        { name: 'findByOwner', by: ['trackingNumber', 'ghost'] },
+      ];
+
+      expect(failurePaths(blueprint)).toContain('repository.extraFinders[0].by[1]');
+    });
+
+    it('rejects a single-element multi-field finder (use the string form)', () => {
+      const blueprint = baseBlueprint();
+      blueprint.repository.extraFinders = [{ name: 'findByOwner', by: ['trackingNumber'] }];
+
+      expect(
+        failurePaths(blueprint).some((path) => path.startsWith('repository.extraFinders[0].by')),
+      ).toBe(true);
+    });
+
+    it('accepts a defaultOrder over root columns and rejects unknown or bare ones', () => {
+      const blueprint = baseBlueprint();
+      blueprint.repository.defaultOrder = ['status:asc', 'createdAt:desc'];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.repository.defaultOrder = ['ghost:desc'];
+      expect(failurePaths(blueprint)).toContain('repository.defaultOrder[0]');
+
+      blueprint.repository.defaultOrder = ['status'];
+      expect(failurePaths(blueprint)).toContain('repository.defaultOrder[0]');
+    });
+
+    it('accepts a directed index column and still checks the column name', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!['indexes'] = [['status', 'createdAt:desc']];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.entities['Complaint']!['indexes'] = [['ghost:desc']];
+      expect(failurePaths(blueprint)).toContain('entities.Complaint.indexes[0][0]');
+    });
+
+    it('rejects a direction on a unique column', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['Complaint']!['uniques'] = [['trackingNumber:desc']];
+
+      expect(
+        failurePaths(blueprint).some((path) => path.startsWith('entities.Complaint.uniques')),
+      ).toBe(true);
+    });
+
+    it('accepts a basePath starting with "/" and rejects a relative one', () => {
+      const blueprint = baseBlueprint();
+      blueprint.module['basePath'] = '/me/addresses';
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.module['basePath'] = 'me/addresses';
+      expect(failurePaths(blueprint)).toContain('module.basePath');
+    });
+  });
+
   it('treats a route without access as authenticated, and keeps it valid', () => {
     const blueprint = baseBlueprint();
     blueprint.routes = [{ method: 'get', path: '/:id' }];
@@ -367,6 +444,24 @@ describe('blueprintSchema', () => {
     if (result.success) {
       expect(result.data.routes[0]?.access).toBeUndefined();
     }
+  });
+});
+
+describe('parseOrderedColumn', () => {
+  it('splits the direction and leaves bare columns to the emitter convention', () => {
+    expect(parseOrderedColumn('createdAt:desc')).toEqual({
+      column: 'createdAt',
+      direction: 'desc',
+    });
+    expect(parseOrderedColumn('status:asc')).toEqual({ column: 'status', direction: 'asc' });
+    expect(parseOrderedColumn('status')).toEqual({ column: 'status', direction: null });
+  });
+});
+
+describe('finderFields', () => {
+  it('normalizes both spellings of "by" to a list', () => {
+    expect(finderFields('trackingNumber')).toEqual(['trackingNumber']);
+    expect(finderFields(['actorId', 'currency'])).toEqual(['actorId', 'currency']);
   });
 });
 

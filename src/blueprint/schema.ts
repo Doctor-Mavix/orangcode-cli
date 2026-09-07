@@ -23,6 +23,7 @@ export const SCALAR_FIELD_TYPES = [
   'uuid',
   'email',
   'phone',
+  'url',
 ] as const;
 
 type EnumReference = `enum:${string}`;
@@ -66,12 +67,37 @@ const fieldSchema = z.strictObject({
 
 const columnListSchema = z.array(z.array(z.string().min(1)).min(1)).optional();
 
+/**
+ * An index column with an optional sort direction. Without one the emitters keep their
+ * keyset convention (`createdAt`/`id` descending); an explicit direction always wins.
+ */
+const orderedColumnSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z0-9_]+(?::(?:asc|desc))?$/,
+    'Expected "column" or "column:asc|desc", e.g. "createdAt:desc".',
+  );
+
+const orderedColumnListSchema = z.array(z.array(orderedColumnSchema).min(1)).optional();
+
+export interface OrderedColumn {
+  column: string;
+  /** `null` = no explicit direction: the emitter applies its own convention. */
+  direction: 'asc' | 'desc' | null;
+}
+
+export function parseOrderedColumn(ref: string): OrderedColumn {
+  const [column = '', direction] = ref.split(':');
+
+  return { column, direction: direction === 'asc' || direction === 'desc' ? direction : null };
+}
+
 const entitySchema = z.strictObject({
   fields: z.record(z.string().min(1), fieldSchema),
   // `'createdAt'` = append-only rows: a `createdAt` column but no `updatedAt`.
   timestamps: z.union([z.boolean(), z.literal('createdAt')]).optional(),
   softDelete: z.boolean().optional(),
-  indexes: columnListSchema,
+  indexes: orderedColumnListSchema,
   // Composite unique constraints, e.g. [["actorId", "currency"]] — a plain index cannot
   // arbitrate the race a unique does (proj_fintech wallet, insight 20).
   uniques: columnListSchema,
@@ -93,6 +119,11 @@ const moduleSchema = z.strictObject({
   name: z
     .string()
     .regex(KEBAB_CASE, 'Module name must be kebab-case, e.g. "complaint" or "wallet-transfer".'),
+  /** Mount point when it cannot be derived from the name (`/me/addresses`). */
+  basePath: z
+    .string()
+    .regex(/^\/[A-Za-z0-9/_-]*$/, 'basePath must start with "/", e.g. "/me/addresses".')
+    .optional(),
   supportedProviders: z.enum(['both', 'sql', 'mongo']),
   transactionalGroup: z.string().min(1).nullable(),
   dependsOn: z.array(z.string().min(1)),
@@ -116,8 +147,26 @@ export const REPOSITORY_OPERATIONS = ['create', 'findById', 'list', 'update', 'r
 
 const repositorySchema = z.strictObject({
   operations: z.array(z.enum(REPOSITORY_OPERATIONS)),
-  extraFinders: z.array(z.strictObject({ name: z.string().min(1), by: z.string().min(1) })),
+  extraFinders: z.array(
+    z.strictObject({
+      name: z.string().min(1),
+      // A list = a multi-field finder over a composite key (proj_fintech `findByOwner`).
+      by: z.union([z.string().min(1), z.array(z.string().min(1)).min(2)]),
+    }),
+  ),
   filter: z.array(z.string().min(1)),
+  /** Business sort of `list`, e.g. ["isDefault:desc", "createdAt:asc"] (root-entity columns). */
+  defaultOrder: z
+    .array(
+      z
+        .string()
+        .regex(
+          /^[A-Za-z0-9_]+:(?:asc|desc)$/,
+          'Expected "column:asc" or "column:desc", e.g. "isDefault:desc".',
+        ),
+    )
+    .min(1)
+    .optional(),
   /**
    * Root-entity fields the service never provides at creation (a state-machine field starts
    * at its default, an assignment starts empty). They are left out of `New<Entity>`.
@@ -246,17 +295,14 @@ export const blueprintSchema = blueprintShape.superRefine((blueprint, ctx) => {
       });
     }
 
-    const knownColumns = new Set([
-      'id',
-      ...Object.keys(entity.fields),
-      ...(entity.timestamps === true ? ['createdAt', 'updatedAt'] : []),
-      ...(entity.timestamps === 'createdAt' ? ['createdAt'] : []),
-      ...(entity.softDelete === true ? ['deletedAt'] : []),
-    ]);
+    const knownColumns = knownColumnsOf(entity);
 
     for (const kind of ['indexes', 'uniques'] as const) {
       (entity[kind] ?? []).forEach((columns, group) => {
-        columns.forEach((column, position) => {
+        columns.forEach((ref, position) => {
+          // Only indexes may carry a ":asc|:desc" direction; uniques are bare names.
+          const column = kind === 'indexes' ? parseOrderedColumn(ref).column : ref;
+
           if (!knownColumns.has(column)) {
             ctx.addIssue({
               code: 'custom',
@@ -274,15 +320,19 @@ export const blueprintSchema = blueprintShape.superRefine((blueprint, ctx) => {
   }
 
   blueprint.repository.extraFinders.forEach((finder, index) => {
-    const exists = Object.values(blueprint.entities).some((entity) => finder.by in entity.fields);
+    finderFields(finder.by).forEach((fieldName, position) => {
+      const exists = Object.values(blueprint.entities).some((entity) => fieldName in entity.fields);
 
-    if (!exists) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['repository', 'extraFinders', index, 'by'],
-        message: `"${finder.by}" is not a field of any declared entity. Add the field under "entities" or fix the finder.`,
-      });
-    }
+      if (!exists) {
+        ctx.addIssue({
+          code: 'custom',
+          path: Array.isArray(finder.by)
+            ? ['repository', 'extraFinders', index, 'by', position]
+            : ['repository', 'extraFinders', index, 'by'],
+          message: `"${fieldName}" is not a field of any declared entity. Add the field under "entities" or fix the finder.`,
+        });
+      }
+    });
   });
 
   checkRepositoryFieldLists(blueprint, ctx);
@@ -305,9 +355,25 @@ export function rootEntityName(blueprint: {
   return null;
 }
 
+/** A finder's field list, whether declared as a single name or a composite list. */
+export function finderFields(by: string | string[]): string[] {
+  return Array.isArray(by) ? by : [by];
+}
+
+function knownColumnsOf(entity: BlueprintShape['entities'][string]): Set<string> {
+  return new Set([
+    'id',
+    ...Object.keys(entity.fields),
+    ...(entity.timestamps === true ? ['createdAt', 'updatedAt'] : []),
+    ...(entity.timestamps === 'createdAt' ? ['createdAt'] : []),
+    ...(entity.softDelete === true ? ['deletedAt'] : []),
+  ]);
+}
+
 function checkRepositoryFieldLists(blueprint: BlueprintShape, ctx: z.RefinementCtx): void {
   const rootName = rootEntityName(blueprint);
-  const rootFields = rootName === null ? {} : (blueprint.entities[rootName]?.fields ?? {});
+  const root = rootName === null ? undefined : blueprint.entities[rootName];
+  const rootFields = root?.fields ?? {};
 
   for (const listName of ['createOmits', 'patch'] as const) {
     (blueprint.repository[listName] ?? []).forEach((fieldName, index) => {
@@ -320,6 +386,20 @@ function checkRepositoryFieldLists(blueprint: BlueprintShape, ctx: z.RefinementC
       }
     });
   }
+
+  const rootColumns = root === undefined ? new Set<string>() : knownColumnsOf(root);
+
+  (blueprint.repository.defaultOrder ?? []).forEach((ref, index) => {
+    const { column } = parseOrderedColumn(ref);
+
+    if (!rootColumns.has(column)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['repository', 'defaultOrder', index],
+        message: `"${column}" is not a column of the root entity${rootName === null ? '' : ` "${rootName}"`}. Declare it under "entities" or fix "defaultOrder".`,
+      });
+    }
+  });
 }
 
 function checkInputs(blueprint: BlueprintShape, ctx: z.RefinementCtx): void {

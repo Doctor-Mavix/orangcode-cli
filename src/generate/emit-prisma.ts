@@ -1,4 +1,5 @@
 import type { Blueprint, BlueprintField } from '../blueprint/schema';
+import { parseOrderedColumn } from '../blueprint/schema';
 import type { EntityView, OwnedChildView } from './model';
 import { docLines, ownedChildren, rootEntity } from './model';
 import { camelCase, snakeCase, tableName } from './naming';
@@ -162,7 +163,14 @@ function renderGroup(rows: Row[]): string[] {
   });
 }
 
-function indexColumn(column: string): string {
+function indexColumn(ref: string): string {
+  const { column, direction } = parseOrderedColumn(ref);
+
+  if (direction !== null) {
+    return direction === 'desc' ? `${column}(sort: Desc)` : column;
+  }
+
+  // Keyset convention when the blueprint does not say: newest first on time and id columns.
   return column === 'createdAt' || column === 'id' ? `${column}(sort: Desc)` : column;
 }
 
