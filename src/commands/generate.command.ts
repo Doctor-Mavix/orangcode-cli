@@ -4,7 +4,14 @@ import { dirname, join } from 'node:path';
 import { loadBlueprintFile } from '../blueprint/load';
 import { blueprintSchema, formatIssuePath } from '../blueprint/schema';
 import { CliError } from '../errors';
-import { domainFiles, emitPrismaBlock, upsertPrismaRegion } from '../generate';
+import {
+  domainFiles,
+  emitPrismaBlock,
+  moduleFiles,
+  skeletonFiles,
+  upsertManifestModule,
+  upsertPrismaRegion,
+} from '../generate';
 import { writeErr, writeOut } from '../output';
 import type { Command } from './command';
 
@@ -14,7 +21,7 @@ const USAGE =
 interface GenerateOptions {
   blueprintPath: string;
   projectDir: string;
-  only: 'domain';
+  only: 'all' | 'domain';
 }
 
 export class GenerateCommand implements Command {
@@ -50,12 +57,52 @@ export class GenerateCommand implements Command {
     }
 
     const blueprint = result.data;
+    const files =
+      options.only === 'domain'
+        ? domainFiles(blueprint)
+        : [...domainFiles(blueprint), ...moduleFiles(blueprint)];
 
-    for (const file of domainFiles(blueprint)) {
+    for (const file of files) {
       const target = join(options.projectDir, file.path);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, file.content);
       writeOut(`generated ${file.path}`);
+    }
+
+    if (options.only === 'all') {
+      // Skeletons are created once and belong to the developer from then on.
+      for (const file of skeletonFiles(blueprint)) {
+        const target = join(options.projectDir, file.path);
+
+        if (existsSync(target)) {
+          continue;
+        }
+
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, file.content);
+        writeOut(`created ${file.path} (skeleton — yours from now on)`);
+      }
+
+      const manifestPath = join(options.projectDir, 'src', 'modules', 'index.ts');
+
+      if (!existsSync(manifestPath)) {
+        throw new CliError(
+          `No src/modules/index.ts under "${options.projectDir}". Point --project at the root of a project created from the template.`,
+        );
+      }
+
+      const manifestSource = readFileSync(manifestPath, 'utf8');
+
+      try {
+        const updated = upsertManifestModule(manifestSource, blueprint.module.name);
+
+        if (updated !== manifestSource) {
+          writeFileSync(manifestPath, updated);
+          writeOut(`updated src/modules/index.ts (module "${blueprint.module.name}")`);
+        }
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
     }
 
     const prismaPath = join(options.projectDir, 'prisma', 'schema.prisma');
@@ -78,7 +125,11 @@ export class GenerateCommand implements Command {
     }
 
     writeOut(`generated prisma/schema.prisma (region "${blueprint.module.name}")`);
-    writeOut(`Module "${blueprint.module.name}" generated (${options.only} wave).`);
+    writeOut(
+      options.only === 'domain'
+        ? `Module "${blueprint.module.name}" generated (domain wave).`
+        : `Module "${blueprint.module.name}" generated.`,
+    );
     return 0;
   }
 }
@@ -86,7 +137,7 @@ export class GenerateCommand implements Command {
 function parseOptions(args: readonly string[]): GenerateOptions {
   let blueprintPath: string | undefined;
   let projectDir = process.cwd();
-  let only = 'domain' as const;
+  let only: 'all' | 'domain' = 'all';
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -105,7 +156,7 @@ function parseOptions(args: readonly string[]): GenerateOptions {
 
       if (value !== 'domain') {
         throw new CliError(
-          `Unsupported --only value "${value ?? ''}" — this version generates the "domain" wave only.`,
+          `Unsupported --only value "${value ?? ''}" — only "domain" restricts the run (the default generates everything).`,
         );
       }
 
