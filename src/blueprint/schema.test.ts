@@ -7,19 +7,29 @@ interface TestBlueprint {
   schemaVersion: number;
   module: Record<string, unknown>;
   enums: Record<string, string[]>;
+  aliases?: Record<string, Record<string, unknown>>;
   entities: Record<
     string,
     { fields: Record<string, Record<string, unknown>>; [key: string]: unknown }
   >;
-  stateMachine?: { field: string; transitions: Record<string, string[]> };
+  stateMachine?: {
+    field: string;
+    transitions: Record<string, string[] | { to: string[]; doc: string }>;
+  };
   repository: {
     operations: string[];
     extraFinders: { name: string; by: string }[];
     filter: string[];
+    createOmits?: string[];
+    patch?: string[];
   };
+  inputs?: Record<
+    string,
+    { kind: string; fields: Record<string, Record<string, unknown>> } & Record<string, unknown>
+  >;
   routes: Record<string, unknown>[];
   kit: string[];
-  realtimeEvents: string[];
+  realtimeEvents: Record<string, Record<string, string>>;
   i18n: boolean;
 }
 
@@ -61,12 +71,20 @@ function baseBlueprint(): TestBlueprint {
       extraFinders: [{ name: 'findByTrackingNumber', by: 'trackingNumber' }],
       filter: ['status'],
     },
+    inputs: {
+      createComplaint: {
+        kind: 'body',
+        fields: {
+          reporterEmail: { type: 'email', optional: true, max: 254 },
+        },
+      },
+    },
     routes: [
       { method: 'post', path: '/', access: 'public', input: 'createComplaint', status: 201 },
       { method: 'get', path: '/', access: { roles: ['admin'] }, pagination: true },
     ],
     kit: ['notifications'],
-    realtimeEvents: ['complaint.created'],
+    realtimeEvents: { 'complaint.created': { id: 'string', trackingNumber: 'string' } },
     i18n: true,
   });
 }
@@ -228,6 +246,114 @@ describe('blueprintSchema', () => {
 
       // The base blueprint indexes createdAt, which only exists through timestamps.
       expect(failurePaths(blueprint)).toContain('entities.Complaint.indexes[0][1]');
+    });
+  });
+
+  describe('vocabulary extensions (wave 1)', () => {
+    it('accepts an alias reference on a field, and rejects an undeclared one', () => {
+      const blueprint = baseBlueprint();
+      blueprint.aliases = { ActorType: { type: 'string', doc: 'who acted' } };
+      blueprint.entities['Complaint']!.fields['actorType'] = { type: 'alias:ActorType' };
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.entities['Complaint']!.fields['actorType'] = { type: 'alias:Ghost' };
+      expect(failurePaths(blueprint)).toContain('entities.Complaint.fields.actorType.type');
+    });
+
+    it('accepts an owned entity and rejects an unknown parent', () => {
+      const blueprint = baseBlueprint();
+      blueprint.entities['ComplaintEvent'] = {
+        ownedBy: { entity: 'Complaint', as: 'timeline' },
+        fields: { message: { type: 'string', nullable: true } },
+        timestamps: 'createdAt',
+      };
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.entities['ComplaintEvent'] = {
+        ownedBy: { entity: 'Ghost', as: 'timeline' },
+        fields: { message: { type: 'string', nullable: true } },
+      };
+      expect(failurePaths(blueprint)).toContain('entities.ComplaintEvent.ownedBy.entity');
+    });
+
+    it('accepts a documented transition entry ({ to, doc })', () => {
+      const blueprint = baseBlueprint();
+      blueprint.stateMachine!.transitions['in_review'] = {
+        to: ['closed'],
+        doc: 'a reviewed case can only close',
+      };
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+    });
+
+    it('rejects a documented transition whose target is not an enum value', () => {
+      const blueprint = baseBlueprint();
+      blueprint.stateMachine!.transitions['in_review'] = { to: ['archived'], doc: 'nope' };
+
+      expect(failurePaths(blueprint)).toContain('stateMachine.transitions.in_review[0]');
+    });
+
+    it('rejects createOmits and patch entries that are not root-entity fields', () => {
+      const blueprint = baseBlueprint();
+      blueprint.repository.createOmits = ['status', 'ghost'];
+      blueprint.repository.patch = ['phantom'];
+
+      const paths = failurePaths(blueprint);
+      expect(paths).toContain('repository.createOmits[1]');
+      expect(paths).toContain('repository.patch[0]');
+      expect(paths).not.toContain('repository.createOmits[0]');
+    });
+
+    it('rejects a paginated body input', () => {
+      const blueprint = baseBlueprint();
+      blueprint.inputs!['createComplaint']!['paginated'] = true;
+
+      expect(failurePaths(blueprint)).toContain('inputs.createComplaint.paginated');
+    });
+
+    it('rejects an input field referencing an undeclared enum', () => {
+      const blueprint = baseBlueprint();
+      blueprint.inputs!['createComplaint']!.fields['status'] = { type: 'enum:Ghost' };
+
+      expect(failurePaths(blueprint)).toContain('inputs.createComplaint.fields.status.type');
+    });
+
+    it('rejects patternMessage without a pattern, and pattern combined with patternFrom', () => {
+      const blueprint = baseBlueprint();
+      blueprint.inputs!['createComplaint']!.fields['phone'] = {
+        type: 'string',
+        patternMessage: 'must be a phone number',
+      };
+      blueprint.inputs!['createComplaint']!.fields['tracking'] = {
+        type: 'string',
+        pattern: '^A$',
+        patternFrom: { file: '../utils/tracking-number', export: 'TRACKING_NUMBER_PATTERN' },
+      };
+
+      const paths = failurePaths(blueprint);
+      expect(paths).toContain('inputs.createComplaint.fields.phone.patternMessage');
+      expect(paths).toContain('inputs.createComplaint.fields.tracking.patternFrom');
+    });
+
+    it('rejects a route naming an unknown input, and a kind mismatch', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [
+        { method: 'post', path: '/', input: 'ghostInput' },
+        { method: 'get', path: '/', query: 'createComplaint' },
+      ];
+
+      const paths = failurePaths(blueprint);
+      expect(paths).toContain('routes[0].input');
+      expect(paths).toContain('routes[1].query');
+    });
+
+    it('accepts realtime events with typed payloads only', () => {
+      const blueprint = baseBlueprint();
+      blueprint.realtimeEvents = { 'complaint.created': { id: 'uuid' } };
+
+      expect(failurePaths(blueprint).some((path) => path.startsWith('realtimeEvents'))).toBe(true);
     });
   });
 

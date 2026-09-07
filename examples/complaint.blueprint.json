@@ -8,31 +8,89 @@
     "softDeleteModels": ["Complaint"]
   },
   "enums": {
-    "ComplaintStatus": ["pending", "in_review", "resolved", "rejected", "closed"],
-    "ComplaintPriority": ["low", "normal", "high", "urgent"]
+    "ComplaintStatus": ["pending", "in_review", "in_progress", "resolved", "rejected", "closed"],
+    "ComplaintPriority": ["low", "normal", "high", "urgent"],
+    "SubmissionChannel": ["anonymous", "identified", "authenticated"],
+    "ComplaintEventType": [
+      "created",
+      "status_changed",
+      "note_added",
+      "assigned",
+      "priority_changed"
+    ]
+  },
+  "aliases": {
+    "ActorType": {
+      "type": "string",
+      "doc": [
+        "Open like the actor types of the auth module: a timeline entry only records who acted, and",
+        "which kinds of actor exist belongs to the generated project. `system` is the one value this",
+        "module produces on its own, when nobody is signed in."
+      ]
+    }
   },
   "entities": {
     "Complaint": {
       "fields": {
-        "trackingNumber": { "type": "string", "unique": true, "maxLength": 24 },
-        "title": { "type": "string", "minLength": 3, "maxLength": 200 },
-        "description": { "type": "text" },
-        "status": { "type": "enum:ComplaintStatus", "default": "pending" },
+        "trackingNumber": { "type": "string", "unique": true },
+        "submissionChannel": { "type": "enum:SubmissionChannel" },
+        "reporterName": { "type": "string", "nullable": true, "gap": true },
+        "reporterEmail": { "type": "string", "nullable": true },
+        "reporterPhone": { "type": "string", "nullable": true },
+        "category": { "type": "string", "gap": true },
+        "subject": { "type": "string" },
+        "description": { "type": "string" },
+        "incidentDate": { "type": "date", "nullable": true, "gap": true },
+        "locationCity": { "type": "string", "nullable": true },
+        "locationDistrict": { "type": "string", "nullable": true },
+        "locationAddress": { "type": "string", "nullable": true },
+        "status": { "type": "enum:ComplaintStatus", "default": "pending", "gap": true },
         "priority": { "type": "enum:ComplaintPriority", "default": "normal" },
-        "reporterEmail": { "type": "email", "nullable": true },
-        "incidentDate": { "type": "date", "nullable": true }
+        "assignedTo": { "type": "string", "nullable": true },
+        "resolvedAt": { "type": "date", "nullable": true }
       },
       "timestamps": true,
       "softDelete": true,
-      "indexes": [["status", "createdAt"]]
+      "indexes": [["status", "createdAt"], ["category"]]
+    },
+    "ComplaintEvent": {
+      "ownedBy": {
+        "entity": "Complaint",
+        "as": "timeline",
+        "doc": [
+          "The timeline is embedded rather than kept in its own collection: it is append-only, bounded",
+          "by the life of one case, and always read with its complaint. Embedding also makes appending",
+          "an event and changing the case a single-document update, which MongoDB makes atomic on its",
+          "own — no transaction needed."
+        ]
+      },
+      "fields": {
+        "type": { "type": "enum:ComplaintEventType" },
+        "actorType": {
+          "type": "alias:ActorType",
+          "doc": [
+            "Free-form like `actors.actor_type`: which actor types exist is decided by the generated",
+            "project, so a database enum here would reject `agent` on a project that defines one."
+          ]
+        },
+        "actorId": { "type": "string", "nullable": true },
+        "message": { "type": "string", "nullable": true },
+        "fromStatus": { "type": "enum:ComplaintStatus", "nullable": true },
+        "toStatus": { "type": "enum:ComplaintStatus", "nullable": true }
+      },
+      "timestamps": "createdAt"
     }
   },
   "stateMachine": {
     "field": "Complaint.status",
     "transitions": {
-      "pending": ["in_review", "rejected"],
-      "in_review": ["resolved", "rejected"],
-      "resolved": ["closed"],
+      "pending": ["in_review", "rejected", "closed"],
+      "in_review": ["in_progress", "rejected", "closed"],
+      "in_progress": ["resolved", "closed"],
+      "resolved": {
+        "to": ["in_progress", "closed"],
+        "doc": "A resolved case can be reopened: citizens do come back saying nothing actually changed."
+      },
       "rejected": ["closed"],
       "closed": []
     }
@@ -40,7 +98,94 @@
   "repository": {
     "operations": ["create", "findById", "list", "update", "remove"],
     "extraFinders": [{ "name": "findByTrackingNumber", "by": "trackingNumber" }],
-    "filter": ["status", "priority"]
+    "filter": ["status", "category"],
+    "createOmits": ["status", "assignedTo", "resolvedAt"],
+    "patch": ["status", "priority", "assignedTo", "resolvedAt"]
+  },
+  "inputs": {
+    "createComplaint": {
+      "kind": "body",
+      "doc": [
+        "Bodies are strict: an unknown key is a rejected request, not a silently dropped one.",
+        "That closes mass-assignment (a citizen posting `status` or `assignedTo`) by construction",
+        "instead of relying on every handler remembering to pick fields."
+      ],
+      "fields": {
+        "reporterName": { "type": "string", "optional": true, "min": 1, "max": 120 },
+        "reporterEmail": { "type": "email", "optional": true, "max": 254 },
+        "reporterPhone": {
+          "type": "string",
+          "optional": true,
+          "pattern": "^\\+?[0-9][0-9 .-]{6,19}$",
+          "patternMessage": "must be a phone number"
+        },
+        "category": { "type": "string", "min": 2, "max": 60 },
+        "subject": { "type": "string", "min": 5, "max": 200 },
+        "description": { "type": "string", "min": 20, "max": 5000 },
+        "incidentDate": { "type": "date", "optional": true, "notInFuture": true },
+        "locationCity": { "type": "string", "optional": true, "min": 1, "max": 120 },
+        "locationDistrict": { "type": "string", "optional": true, "min": 1, "max": 120 },
+        "locationAddress": { "type": "string", "optional": true, "min": 1, "max": 240 }
+      }
+    },
+    "listComplaints": {
+      "kind": "query",
+      "paginated": true,
+      "fields": {
+        "status": { "type": "enum:ComplaintStatus", "optional": true },
+        "category": { "type": "string", "optional": true, "min": 1, "max": 60 }
+      }
+    },
+    "exportComplaints": {
+      "kind": "query",
+      "doc": "The export carries no cursor: it walks the whole filtered set, paging internally.",
+      "fields": {
+        "status": { "type": "enum:ComplaintStatus", "optional": true },
+        "category": { "type": "string", "optional": true, "min": 1, "max": 60 }
+      }
+    },
+    "complaintIdParams": {
+      "kind": "params",
+      "fields": {
+        "id": { "type": "uuid" }
+      }
+    },
+    "trackingNumberParams": {
+      "kind": "params",
+      "fields": {
+        "trackingNumber": {
+          "type": "string",
+          "uppercase": true,
+          "patternFrom": { "file": "../utils/tracking-number", "export": "TRACKING_NUMBER_PATTERN" }
+        }
+      }
+    },
+    "assignComplaint": {
+      "kind": "body",
+      "doc": "Assignment and priority are separate endpoints so each one writes a single, honest event.",
+      "fields": {
+        "assignedTo": { "type": "string", "nullable": true, "min": 1, "max": 64 }
+      }
+    },
+    "setPriority": {
+      "kind": "body",
+      "fields": {
+        "priority": { "type": "enum:ComplaintPriority" }
+      }
+    },
+    "changeStatus": {
+      "kind": "body",
+      "fields": {
+        "status": { "type": "enum:ComplaintStatus" },
+        "message": { "type": "string", "optional": true, "min": 1, "max": 1000 }
+      }
+    },
+    "addNote": {
+      "kind": "body",
+      "fields": {
+        "message": { "type": "string", "min": 1, "max": 2000 }
+      }
+    }
   },
   "routes": [
     {
@@ -50,11 +195,94 @@
       "input": "createComplaint",
       "status": 201
     },
-    { "method": "get", "path": "/", "access": { "roles": ["admin", "agent"] }, "pagination": true },
-    { "method": "get", "path": "/:id", "access": { "roles": ["admin", "agent"] } },
-    { "method": "post", "path": "/:id/assign", "access": { "roles": ["admin"] }, "stepUp": false }
+    {
+      "method": "get",
+      "path": "/track/:trackingNumber",
+      "access": "public",
+      "params": "trackingNumberParams"
+    },
+    {
+      "method": "get",
+      "path": "/",
+      "access": { "roles": ["admin"] },
+      "query": "listComplaints",
+      "pagination": true
+    },
+    {
+      "method": "get",
+      "path": "/export.csv",
+      "access": { "roles": ["admin"] },
+      "query": "exportComplaints"
+    },
+    {
+      "method": "get",
+      "path": "/:id",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams"
+    },
+    {
+      "method": "post",
+      "path": "/:id/attachments",
+      "access": "public",
+      "params": "complaintIdParams"
+    },
+    {
+      "method": "get",
+      "path": "/:id/attachments",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams"
+    },
+    {
+      "method": "post",
+      "path": "/:id/status",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams",
+      "input": "changeStatus",
+      "status": 200
+    },
+    {
+      "method": "post",
+      "path": "/:id/notes",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams",
+      "input": "addNote"
+    },
+    {
+      "method": "patch",
+      "path": "/:id/assignee",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams",
+      "input": "assignComplaint"
+    },
+    {
+      "method": "patch",
+      "path": "/:id/priority",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams",
+      "input": "setPriority"
+    },
+    {
+      "method": "delete",
+      "path": "/:id",
+      "access": { "roles": ["admin"] },
+      "params": "complaintIdParams"
+    }
   ],
-  "kit": ["notifications", "realtime", "csv-export"],
-  "realtimeEvents": ["complaint.created", "complaint.status_changed"],
+  "kit": ["notifications", "realtime", "csv-export", "media"],
+  "realtimeEvents": {
+    "complaint.created": {
+      "id": "string",
+      "trackingNumber": "string",
+      "category": "string",
+      "subject": "string",
+      "createdAt": "string"
+    },
+    "complaint.status-changed": {
+      "id": "string",
+      "trackingNumber": "string",
+      "fromStatus": "string",
+      "toStatus": "string"
+    }
+  },
   "i18n": true
 }
