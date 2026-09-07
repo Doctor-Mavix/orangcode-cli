@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "module": {
+    "name": "complaint",
+    "supportedProviders": "both",
+    "transactionalGroup": null,
+    "dependsOn": ["notification"],
+    "softDeleteModels": ["Complaint"]
+  },
+  "enums": {
+    "ComplaintStatus": ["pending", "in_review", "resolved", "rejected", "closed"],
+    "ComplaintPriority": ["low", "normal", "high", "urgent"]
+  },
+  "entities": {
+    "Complaint": {
+      "fields": {
+        "trackingNumber": { "type": "string", "unique": true, "maxLength": 24 },
+        "title": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "description": { "type": "text" },
+        "status": { "type": "enum:ComplaintStatus", "default": "pending" },
+        "priority": { "type": "enum:ComplaintPriority", "default": "normal" },
+        "reporterEmail": { "type": "email", "nullable": true },
+        "incidentDate": { "type": "date", "nullable": true }
+      },
+      "timestamps": true,
+      "softDelete": true,
+      "indexes": [["status", "createdAt"]]
+    }
+  },
+  "stateMachine": {
+    "field": "Complaint.status",
+    "transitions": {
+      "pending": ["in_review", "rejected"],
+      "in_review": ["resolved", "rejected"],
+      "resolved": ["closed"],
+      "rejected": ["closed"],
+      "closed": []
+    }
+  },
+  "repository": {
+    "operations": ["create", "findById", "list", "update", "remove"],
+    "extraFinders": [{ "name": "findByTrackingNumber", "by": "trackingNumber" }],
+    "filter": ["status", "priority"]
+  },
+  "routes": [
+    {
+      "method": "post",
+      "path": "/",
+      "access": "public",
+      "input": "createComplaint",
+      "status": 201
+    },
+    { "method": "get", "path": "/", "access": { "roles": ["admin", "agent"] }, "pagination": true },
+    { "method": "get", "path": "/:id", "access": { "roles": ["admin", "agent"] } },
+    { "method": "post", "path": "/:id/assign", "access": { "roles": ["admin"] }, "stepUp": false }
+  ],
+  "kit": ["notifications", "realtime", "csv-export"],
+  "realtimeEvents": ["complaint.created", "complaint.status_changed"],
+  "i18n": true
+}
