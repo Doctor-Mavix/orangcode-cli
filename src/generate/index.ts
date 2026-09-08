@@ -25,7 +25,10 @@ export function domainFiles(blueprint: Blueprint): GeneratedFile[] {
 
   return [
     { path: `${base}/types/${name}.types.ts`, content: emitTypesFile(blueprint) },
-    { path: `${base}/types/${name}.events.ts`, content: emitEventsFile(blueprint) },
+    // No events, no file: an empty interface augmentation would lint as "matches anything".
+    ...(Object.keys(blueprint.realtimeEvents).length === 0
+      ? []
+      : [{ path: `${base}/types/${name}.events.ts`, content: emitEventsFile(blueprint) }]),
     { path: `${base}/schemas/${name}.schemas.ts`, content: emitSchemasFile(blueprint) },
     { path: `${base}/repositories/${name}.repository.ts`, content: emitRepositoryFile(blueprint) },
     ...(blueprint.module.supportedProviders === 'sql'

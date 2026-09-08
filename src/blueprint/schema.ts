@@ -138,6 +138,17 @@ const moduleSchema = z.strictObject({
   transactionalGroup: z.string().min(1).nullable(),
   dependsOn: z.array(dependencySchema),
   softDeleteModels: z.array(z.string().min(1)),
+  /** Hand-written controllers mounted next to the generated one (`wallet-admin.controller.ts`). */
+  extraControllers: z
+    .array(
+      z
+        .string()
+        .regex(
+          /^[A-Z][A-Za-z0-9]*Controller$/,
+          'Expected a PascalCase class name ending in "Controller", e.g. "WalletAdminController".',
+        ),
+    )
+    .optional(),
 });
 
 const transitionTargetsSchema = z.array(z.string().min(1));
@@ -451,6 +462,18 @@ function checkRepositoryFieldLists(blueprint: BlueprintShape, ctx: z.RefinementC
     });
   }
 
+  if (
+    blueprint.repository.operations.includes('update') &&
+    (blueprint.repository.patch ?? []).length === 0
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['repository', 'patch'],
+      message:
+        'The "update" operation needs "patch" — list the columns an update may change, e.g. ["status"].',
+    });
+  }
+
   const rootColumns = root === undefined ? new Set<string>() : knownColumnsOf(root);
 
   (blueprint.repository.defaultOrder ?? []).forEach((ref, index) => {
@@ -475,6 +498,16 @@ function checkInputs(blueprint: BlueprintShape, ctx: z.RefinementCtx): void {
         code: 'custom',
         path: ['inputs', inputName, 'paginated'],
         message: `Only a "query" input can be paginated — "${inputName}" is a "${input.kind}".`,
+      });
+    }
+
+    if (Object.keys(input.fields).length === 0 && input.paginated !== true) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['inputs', inputName, 'fields'],
+        message:
+          `An input with no fields validates nothing — declare fields, ` +
+          `or make "${inputName}" a paginated query to reuse the cursor schema.`,
       });
     }
 
@@ -566,6 +599,15 @@ function checkRoutes(blueprint: BlueprintShape, ctx: z.RefinementCtx): void {
         code: 'custom',
         path: ['routes', index, 'csvExport'],
         message: 'A CSV export pages through the whole set itself — it cannot also be paginated.',
+      });
+    }
+
+    if (route.pagination === true && route.query === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['routes', index, 'query'],
+        message:
+          'A paginated route reads limit/cursor from a "query" input — declare one and reference it here.',
       });
     }
 

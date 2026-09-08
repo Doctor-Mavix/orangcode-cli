@@ -469,7 +469,7 @@ function listMethod(blueprint: Blueprint, view: RepositoryView): string {
   const filters = blueprint.repository.filter;
   const whereLines =
     filters.length === 0
-      ? ['      where: cursorWhere(query),']
+      ? ['      where: { ...cursorWhere(query) },']
       : [
           '      where: {',
           ...filters.map(
@@ -479,13 +479,14 @@ function listMethod(blueprint: Blueprint, view: RepositoryView): string {
           '        ...cursorWhere(query),',
           '      },',
         ];
+  const params = ['query: CursorQuery'];
+
+  if (filters.length > 0) {
+    params.push(`filter: ${root.name}Filter`);
+  }
 
   return [
-    ...methodSignature(
-      'list',
-      ['query: CursorQuery', `filter: ${root.name}Filter`],
-      `Promise<CursorPage<${root.name}>>`,
-    ),
+    ...methodSignature('list', params, `Promise<CursorPage<${root.name}>>`),
     `    const rows = await ${view.delegate}.findMany({`,
     ...whereLines,
     ...orderByProp(blueprint, '      '),

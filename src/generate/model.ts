@@ -60,9 +60,10 @@ export function tsType(field: BlueprintField): string {
 
   switch (type) {
     case 'int':
-    case 'bigint':
     case 'decimal':
       return 'number';
+    case 'bigint':
+      return 'bigint';
     case 'boolean':
       return 'boolean';
     case 'date':

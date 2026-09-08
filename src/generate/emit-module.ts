@@ -1,7 +1,7 @@
 import type { Blueprint } from '../blueprint/schema';
 import { dependencyDoc, dependencyName } from '../blueprint/schema';
 import { PRINT_WIDTH, docLines, rootEntity } from './model';
-import { camelCase, kebabPlural, upperSnakeCase } from './naming';
+import { camelCase, kebabPlural, upperSnakeCase, words } from './naming';
 
 /**
  * `<module>.module.ts` — the composition root of the module: repository choice, dependency
@@ -19,6 +19,13 @@ export function emitModuleFile(blueprint: Blueprint): string {
   ];
 
   return `${sections.join('\n\n')}\n`;
+}
+
+/** `WalletAdminController` → `wallet-admin`, the file the hand-written class lives in. */
+function controllerFileName(className: string): string {
+  return words(className.replace(/Controller$/, ''))
+    .map((word) => word.toLowerCase())
+    .join('-');
 }
 
 /** `notification` → `@shared/notifications/notification.tokens` / `NOTIFICATION_SERVICE`. */
@@ -66,8 +73,18 @@ function importSection(blueprint: Blueprint, rootName: string): string {
     );
   }
 
+  const controllerImports = [
+    { className: `${rootName}Controller`, path: `./controllers/${name}.controller` },
+    ...(module.extraControllers ?? []).map((className) => ({
+      className,
+      path: `./controllers/${controllerFileName(className)}.controller`,
+    })),
+  ].sort((a, b) => (a.path < b.path ? -1 : 1));
+
   lines.push(
-    `import { ${rootName}Controller } from './controllers/${name}.controller';`,
+    ...controllerImports.map(
+      ({ className, path }) => `import { ${className} } from '${path}';`,
+    ),
     `import { ${upperSnakeCase(name)}_REPOSITORY } from './repositories/${name}.repository';`,
     `import type { ${rootName}Repository } from './repositories/${name}.repository';`,
   );
@@ -176,8 +193,9 @@ function moduleSection(blueprint: Blueprint, rootName: string): string {
     ...doc,
     `export const ${camelCase(module.name)}Module: AppModule = {`,
     `  name: '${module.name}',`,
-    `  controllers: [${rootName}Controller],`,
-    ...(module.basePath === undefined ? [] : [`  mountPath: '${module.basePath}',`]),
+    // basePath already lives in @Controller — emitting mountPath too would double the
+    // segment (app.use composes both) and take the module out from under API_PREFIX.
+    `  controllers: [${[`${rootName}Controller`, ...(module.extraControllers ?? [])].join(', ')}],`,
     ...(module.transactionalGroup === null
       ? []
       : [`  transactionalGroup: '${module.transactionalGroup}',`]),

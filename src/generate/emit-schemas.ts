@@ -139,6 +139,15 @@ function importLine(names: string[], path: string): string {
 function inputSections(name: string, input: BlueprintInput): string[] {
   const schemaName = `${name}Schema`;
   const doc = input.doc === undefined ? '' : `${jsdoc(input.doc)}\n`;
+
+  // A paginated query with no fields of its own IS the cursor schema — no empty extend.
+  if (input.paginated === true && Object.keys(input.fields).length === 0) {
+    return [
+      `${doc}export const ${schemaName} = cursorQuerySchema;`,
+      `export type ${pascalCase(name)}Query = z.infer<typeof ${schemaName}>;`,
+    ];
+  }
+
   const opener = input.paginated === true ? 'cursorQuerySchema.extend({' : 'z.strictObject({';
 
   const fieldLines = Object.entries(input.fields).map(([fieldName, field]) =>
@@ -203,6 +212,15 @@ function buildChain(
   } else if (field.type === 'date') {
     head = 'z.coerce';
     segments.push('date()');
+  } else if (field.type === 'boolean') {
+    segments.push('boolean()');
+  } else if (field.type === 'phone') {
+    // Same idiom the reference modules use: lenient about separators, strict about length.
+    segments.push(
+      'string()',
+      'trim()',
+      "regex(/^\\+?[0-9][0-9 .-]{6,19}$/, 'must be a phone number')",
+    );
   } else {
     segments.push('string()', 'trim()');
 

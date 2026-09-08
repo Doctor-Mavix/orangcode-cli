@@ -305,8 +305,20 @@ function decoratorLines(view: RouteView): string[] {
   return lines;
 }
 
+/** A handler only declares `req` when it actually reads something from the request. */
+function readsRequest(view: RouteView): boolean {
+  return (
+    view.paramsFields.length > 0 ||
+    view.bodyType !== null ||
+    view.queryType !== null ||
+    view.route.locale === true ||
+    view.shape.kind === 'upload' ||
+    view.shape.kind === 'page'
+  );
+}
+
 function signatureLines(view: RouteView): string[] {
-  const params = [`req: ${typedRequestOf(view)}`];
+  const params = readsRequest(view) ? [`req: ${typedRequestOf(view)}`] : [];
 
   if (view.shape.kind === 'csv') {
     params.push('res: Response');
@@ -498,7 +510,9 @@ function importSection(
     lines.push("import { ApiPayload } from '@core/http/api-response';");
   }
 
-  lines.push("import type { TypedRequest } from '@core/http/typed-request';");
+  if (views.some(readsRequest)) {
+    lines.push("import type { TypedRequest } from '@core/http/typed-request';");
+  }
 
   if (hasUpload) {
     lines.push(

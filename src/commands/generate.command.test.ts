@@ -182,6 +182,7 @@ describe('generate command (end to end)', () => {
           operations: ['create', 'findById', 'list', 'update'],
           extraFinders: [],
           filter: [],
+          patch: ['title'],
         },
         inputs: {},
         routes: [{ method: 'get', path: '/' }],

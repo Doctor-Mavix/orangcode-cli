@@ -73,6 +73,7 @@ function baseBlueprint(): TestBlueprint {
       operations: ['create', 'findById', 'list', 'update', 'remove'],
       extraFinders: [{ name: 'findByTrackingNumber', by: 'trackingNumber' }],
       filter: ['status'],
+      patch: ['status'],
     },
     inputs: {
       createComplaint: {
@@ -81,10 +82,22 @@ function baseBlueprint(): TestBlueprint {
           reporterEmail: { type: 'email', optional: true, max: 254 },
         },
       },
+      listComplaints: {
+        kind: 'query',
+        fields: {
+          status: { type: 'enum:ComplaintStatus', optional: true },
+        },
+      },
     },
     routes: [
       { method: 'post', path: '/', access: 'public', input: 'createComplaint', status: 201 },
-      { method: 'get', path: '/', access: { roles: ['admin'] }, pagination: true },
+      {
+        method: 'get',
+        path: '/',
+        access: { roles: ['admin'] },
+        query: 'listComplaints',
+        pagination: true,
+      },
     ],
     kit: ['notifications'],
     realtimeEvents: { 'complaint.created': { id: 'string', trackingNumber: 'string' } },
@@ -544,6 +557,46 @@ describe('blueprintSchema', () => {
 
       blueprint.routes = [{ method: 'get', path: '/', returns: { type: 'X', from: 'elsewhere' } }];
       expect(blueprintSchema.safeParse(blueprint).success).toBe(false);
+    });
+  });
+
+  describe('expressivity proof cross-checks (insight 23)', () => {
+    it('demands a patch list when the update operation is generated', () => {
+      const blueprint = baseBlueprint();
+      delete blueprint.repository.patch;
+
+      expect(failurePaths(blueprint)).toContain('repository.patch');
+    });
+
+    it('demands a query input on every paginated route', () => {
+      const blueprint = baseBlueprint();
+      blueprint.routes = [{ method: 'get', path: '/', pagination: true }];
+
+      expect(failurePaths(blueprint)).toContain('routes[0].query');
+    });
+
+    it('rejects an input with no fields unless it is a paginated query', () => {
+      const blueprint = baseBlueprint();
+      blueprint.inputs!['emptyBody'] = { kind: 'body', fields: {} };
+
+      expect(failurePaths(blueprint)).toContain('inputs.emptyBody.fields');
+    });
+
+    it('accepts a paginated query with no fields of its own', () => {
+      const blueprint = baseBlueprint();
+      blueprint.inputs!['listAll'] = { kind: 'query', paginated: true, fields: {} };
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+    });
+
+    it('accepts hand-written controllers and polices their naming', () => {
+      const blueprint = baseBlueprint();
+      blueprint.module['extraControllers'] = ['ComplaintAdminController'];
+
+      expect(blueprintSchema.safeParse(blueprint).success).toBe(true);
+
+      blueprint.module['extraControllers'] = ['complaint-admin'];
+      expect(failurePaths(blueprint)).toContain('module.extraControllers[0]');
     });
   });
 });

@@ -419,12 +419,14 @@ function listMethod(blueprint: Blueprint, view: MongoView): string {
           '      })',
         ];
 
+  const params = ['query: CursorQuery'];
+
+  if (filters.length > 0) {
+    params.push(`filter: ${root.name}Filter`);
+  }
+
   return [
-    ...methodSignature(
-      'list',
-      ['query: CursorQuery', `filter: ${root.name}Filter`],
-      `Promise<CursorPage<${root.name}>>`,
-    ),
+    ...methodSignature('list', params, `Promise<CursorPage<${root.name}>>`),
     "    const direction = query.direction === 'asc' ? 1 : -1;",
     '    const documents = await this.model',
     ...findLines,

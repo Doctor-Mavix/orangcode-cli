@@ -173,13 +173,13 @@ function repositoryInterface(
   }
 
   if (operations.includes('list')) {
-    lines.push(
-      ...method(
-        'list',
-        ['query: CursorQuery', `filter: ${root.name}Filter`],
-        `Promise<CursorPage<${root.name}>>`,
-      ),
-    );
+    const listParams = ['query: CursorQuery'];
+
+    if (blueprint.repository.filter.length > 0) {
+      listParams.push(`filter: ${root.name}Filter`);
+    }
+
+    lines.push(...method('list', listParams, `Promise<CursorPage<${root.name}>>`));
   }
 
   if (operations.includes('update')) {

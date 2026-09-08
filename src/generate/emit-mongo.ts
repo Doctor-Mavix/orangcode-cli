@@ -38,9 +38,10 @@ function schemaVarName(view: EntityView, parentName: string | null): string {
 function mongoType(field: BlueprintField): string {
   switch (field.type) {
     case 'int':
-    case 'bigint':
     case 'decimal':
       return 'Number';
+    case 'bigint':
+      return 'BigInt';
     case 'boolean':
       return 'Boolean';
     case 'date':
