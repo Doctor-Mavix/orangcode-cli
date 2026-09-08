@@ -105,26 +105,28 @@ export class GenerateCommand implements Command {
       }
     }
 
-    const prismaPath = join(options.projectDir, 'prisma', 'schema.prisma');
+    if (blueprint.module.supportedProviders !== 'mongo') {
+      const prismaPath = join(options.projectDir, 'prisma', 'schema.prisma');
 
-    if (!existsSync(prismaPath)) {
-      throw new CliError(
-        `No prisma/schema.prisma under "${options.projectDir}". Point --project at the root of a project created from the template.`,
-      );
+      if (!existsSync(prismaPath)) {
+        throw new CliError(
+          `No prisma/schema.prisma under "${options.projectDir}". Point --project at the root of a project created from the template.`,
+        );
+      }
+
+      const source = readFileSync(prismaPath, 'utf8');
+
+      try {
+        writeFileSync(
+          prismaPath,
+          upsertPrismaRegion(source, blueprint.module.name, emitPrismaBlock(blueprint)),
+        );
+      } catch (error) {
+        throw new CliError(error instanceof Error ? error.message : String(error));
+      }
+
+      writeOut(`generated prisma/schema.prisma (region "${blueprint.module.name}")`);
     }
-
-    const source = readFileSync(prismaPath, 'utf8');
-
-    try {
-      writeFileSync(
-        prismaPath,
-        upsertPrismaRegion(source, blueprint.module.name, emitPrismaBlock(blueprint)),
-      );
-    } catch (error) {
-      throw new CliError(error instanceof Error ? error.message : String(error));
-    }
-
-    writeOut(`generated prisma/schema.prisma (region "${blueprint.module.name}")`);
     writeOut(
       options.only === 'domain'
         ? `Module "${blueprint.module.name}" generated (domain wave).`

@@ -162,6 +162,48 @@ describe('generate command (end to end)', () => {
     expect(readFileSync(manifestPath, 'utf8')).toBe(first);
   });
 
+  it('keeps prisma untouched and skips the SQL repository for a mongo-only module', () => {
+    const projectDir = makeProject('mongo-only');
+    const blueprintPath = join(workDir, 'note.blueprint.json');
+    writeFileSync(
+      blueprintPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        module: {
+          name: 'note',
+          supportedProviders: 'mongo',
+          transactionalGroup: null,
+          dependsOn: [],
+          softDeleteModels: [],
+        },
+        enums: {},
+        entities: { Note: { fields: { title: { type: 'string' } }, timestamps: true } },
+        repository: {
+          operations: ['create', 'findById', 'list', 'update'],
+          extraFinders: [],
+          filter: [],
+        },
+        inputs: {},
+        routes: [{ method: 'get', path: '/' }],
+        kit: [],
+        realtimeEvents: {},
+        i18n: false,
+      }),
+    );
+    const before = readFileSync(join(projectDir, 'prisma', 'schema.prisma'), 'utf8');
+
+    expect(new GenerateCommand().run(['module', blueprintPath, '--project', projectDir])).toBe(0);
+
+    expect(readFileSync(join(projectDir, 'prisma', 'schema.prisma'), 'utf8')).toBe(before);
+    expect(
+      existsSync(join(projectDir, 'src/modules/note/repositories/sql/note.prisma.repository.ts')),
+    ).toBe(false);
+    expect(
+      existsSync(join(projectDir, 'src/modules/note/repositories/mongo/note.mongo.repository.ts')),
+    ).toBe(true);
+    expect(stdout.join('')).not.toContain('schema.prisma');
+  });
+
   it('rejects an invalid blueprint with its JSON paths', () => {
     const projectDir = makeProject('invalid');
     const broken = JSON.parse(readFileSync(BLUEPRINT_PATH, 'utf8')) as Record<string, unknown>;

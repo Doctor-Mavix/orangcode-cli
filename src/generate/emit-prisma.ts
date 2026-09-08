@@ -67,7 +67,8 @@ function fieldRow(fieldName: string, field: BlueprintField): Row {
     attributes.push('@unique');
   }
 
-  if (field.default !== undefined) {
+  // A nullable column defaults to NULL by omission — @default(null) is not valid Prisma.
+  if (field.default !== undefined && field.default !== null) {
     attributes.push(`@default(${defaultLiteral(field)})`);
   }
 

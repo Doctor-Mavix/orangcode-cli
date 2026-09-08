@@ -28,10 +28,14 @@ export function domainFiles(blueprint: Blueprint): GeneratedFile[] {
     { path: `${base}/types/${name}.events.ts`, content: emitEventsFile(blueprint) },
     { path: `${base}/schemas/${name}.schemas.ts`, content: emitSchemasFile(blueprint) },
     { path: `${base}/repositories/${name}.repository.ts`, content: emitRepositoryFile(blueprint) },
-    {
-      path: `${base}/repositories/mongo/${name}.schema.ts`,
-      content: emitMongoSchemaFile(blueprint),
-    },
+    ...(blueprint.module.supportedProviders === 'sql'
+      ? []
+      : [
+          {
+            path: `${base}/repositories/mongo/${name}.schema.ts`,
+            content: emitMongoSchemaFile(blueprint),
+          },
+        ]),
   ];
 }
 

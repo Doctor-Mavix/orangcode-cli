@@ -10,7 +10,7 @@ import { emitPrismaBlock } from './emit-prisma';
 import { emitPrismaRepositoryFile } from './emit-prisma-repository';
 import { emitRepositoryFile } from './emit-repository';
 import { emitSchemasFile } from './emit-schemas';
-import { moduleFiles } from './index';
+import { domainFiles, moduleFiles } from './index';
 
 /** Emitter wiring of the insight 20 §8 extensions (url, by[], index directions). */
 
@@ -152,12 +152,58 @@ describe('single-provider modules', () => {
     expect(paths.some((path) => path.includes('mongo'))).toBe(false);
   });
 
+  it('emits no Mongoose schema in the domain wave of a SQL-only module', () => {
+    const paths = domainFiles(blueprint).map((file) => file.path);
+
+    expect(paths.some((path) => path.includes('mongo'))).toBe(false);
+  });
+
+  it('keeps the Mongoose schema in the domain wave of a mongo-only module', () => {
+    const mongoOnly = walletBlueprint({
+      module: {
+        name: 'wallet',
+        supportedProviders: 'mongo',
+        transactionalGroup: null,
+        dependsOn: [],
+        softDeleteModels: [],
+      },
+    });
+    const paths = domainFiles(mongoOnly).map((file) => file.path);
+
+    expect(paths).toContain('src/modules/wallet/repositories/mongo/wallet.schema.ts');
+  });
+
   it('wires the module without the provider ternary', () => {
     const file = emitModuleFile(blueprint);
 
     expect(file).toContain('return new PrismaWalletRepository(sqlClientOf(registration.adapter));');
     expect(file).not.toContain('mongoConnectionOf');
     expect(file).toContain("transactionalGroup: 'wallet',");
+  });
+});
+
+describe('null defaults', () => {
+  it('never renders @default(null) — a nullable column is null by omission', () => {
+    const blueprint = walletBlueprint({
+      entities: {
+        Wallet: {
+          fields: {
+            actorId: { type: 'string' },
+            currency: { type: 'string' },
+            website: { type: 'url', nullable: true },
+            status: { type: 'enum:WalletStatus', default: 'active' },
+            bio: { type: 'string', nullable: true, default: null },
+          },
+          timestamps: true,
+          uniques: [['actorId', 'currency']],
+          indexes: [['status:asc', 'createdAt:desc']],
+        },
+      },
+    });
+    const block = emitPrismaBlock(blueprint);
+
+    expect(block).toContain('bio');
+    expect(block).not.toContain('@default(null)');
   });
 });
 
