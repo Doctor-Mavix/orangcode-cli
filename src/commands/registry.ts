@@ -39,6 +39,10 @@ export class CommandRegistry {
     return [...this.commands.values()];
   }
 
+  has(name: string): boolean {
+    return this.commands.has(name);
+  }
+
   /** Routes a name to its command; an unknown name fails with the closest registered name. */
   resolve(name: string): Command {
     const command = this.commands.get(name);
