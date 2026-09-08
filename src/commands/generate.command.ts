@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { loadBlueprintFile } from '../blueprint/load';
 import { blueprintSchema, formatIssuePath } from '../blueprint/schema';
+import type { Blueprint } from '../blueprint/schema';
 import { CliError } from '../errors';
 import {
   domainFiles,
@@ -25,7 +26,7 @@ import type { Command } from './command';
 const USAGE =
   'Usage: orangcode generate module <path/to/module.blueprint.json> [--project <dir>] [--only domain]';
 
-interface GenerateOptions {
+export interface GenerationRequest {
   blueprintPath: string;
   projectDir: string;
   only: 'all' | 'domain';
@@ -63,94 +64,101 @@ export class GenerateCommand implements Command {
       return 1;
     }
 
-    const blueprint = result.data;
-    // Read before writing a single file: pointing --project at a non-project directory
-    // must fail without leaving half a module behind.
-    const projectManifest = readProjectManifest(options.projectDir);
-    const files =
-      options.only === 'domain'
-        ? domainFiles(blueprint)
-        : [...domainFiles(blueprint), ...moduleFiles(blueprint)];
-    const generatedHashes: Record<string, string> = {};
-
-    for (const file of files) {
-      const target = join(options.projectDir, file.path);
-      mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, file.content);
-      generatedHashes[file.path] = createHash('sha256').update(file.content).digest('hex');
-      writeOut(`generated ${file.path}`);
-    }
-
-    if (options.only === 'all') {
-      // Skeletons are created once and belong to the developer from then on.
-      for (const file of skeletonFiles(blueprint)) {
-        const target = join(options.projectDir, file.path);
-
-        if (existsSync(target)) {
-          continue;
-        }
-
-        mkdirSync(dirname(target), { recursive: true });
-        writeFileSync(target, file.content);
-        writeOut(`created ${file.path} (skeleton — yours from now on)`);
-      }
-
-      const manifestPath = join(options.projectDir, 'src', 'modules', 'index.ts');
-
-      if (!existsSync(manifestPath)) {
-        throw new CliError(
-          `No src/modules/index.ts under "${options.projectDir}". Point --project at the root of a project created from the template.`,
-        );
-      }
-
-      const manifestSource = readFileSync(manifestPath, 'utf8');
-
-      try {
-        const updated = upsertManifestModule(manifestSource, blueprint.module.name);
-
-        if (updated !== manifestSource) {
-          writeFileSync(manifestPath, updated);
-          writeOut(`updated src/modules/index.ts (module "${blueprint.module.name}")`);
-        }
-      } catch (error) {
-        throw new CliError(error instanceof Error ? error.message : String(error));
-      }
-    }
-
-    if (blueprint.module.supportedProviders !== 'mongo') {
-      const prismaPath = join(options.projectDir, 'prisma', 'schema.prisma');
-
-      if (!existsSync(prismaPath)) {
-        throw new CliError(
-          `No prisma/schema.prisma under "${options.projectDir}". Point --project at the root of a project created from the template.`,
-        );
-      }
-
-      const source = readFileSync(prismaPath, 'utf8');
-
-      try {
-        writeFileSync(
-          prismaPath,
-          upsertPrismaRegion(source, blueprint.module.name, emitPrismaBlock(blueprint)),
-        );
-      } catch (error) {
-        throw new CliError(error instanceof Error ? error.message : String(error));
-      }
-
-      writeOut(`generated prisma/schema.prisma (region "${blueprint.module.name}")`);
-    }
-
-    recordInProjectManifest(options, blueprint.module.name, projectManifest, generatedHashes);
+    runGeneration(result.data, options);
     writeOut(
       options.only === 'domain'
-        ? `Module "${blueprint.module.name}" generated (domain wave).`
-        : `Module "${blueprint.module.name}" generated.`,
+        ? `Module "${result.data.module.name}" generated (domain wave).`
+        : `Module "${result.data.module.name}" generated.`,
     );
     return 0;
   }
 }
 
-function parseOptions(args: readonly string[]): GenerateOptions {
+/**
+ * The shared generation core: writes both waves, lays down missing skeletons, updates the
+ * module index and the prisma region, then records the module in .orangcode/manifest.json.
+ */
+export function runGeneration(blueprint: Blueprint, options: GenerationRequest): void {
+  // Read before writing a single file: pointing --project at a non-project directory
+  // must fail without leaving half a module behind.
+  const projectManifest = readProjectManifest(options.projectDir);
+  const files =
+    options.only === 'domain'
+      ? domainFiles(blueprint)
+      : [...domainFiles(blueprint), ...moduleFiles(blueprint)];
+  const generatedHashes: Record<string, string> = {};
+
+  for (const file of files) {
+    const target = join(options.projectDir, file.path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, file.content);
+    generatedHashes[file.path] = createHash('sha256').update(file.content).digest('hex');
+    writeOut(`generated ${file.path}`);
+  }
+
+  if (options.only === 'all') {
+    // Skeletons are created once and belong to the developer from then on.
+    for (const file of skeletonFiles(blueprint)) {
+      const target = join(options.projectDir, file.path);
+
+      if (existsSync(target)) {
+        continue;
+      }
+
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, file.content);
+      writeOut(`created ${file.path} (skeleton — yours from now on)`);
+    }
+
+    const manifestPath = join(options.projectDir, 'src', 'modules', 'index.ts');
+
+    if (!existsSync(manifestPath)) {
+      throw new CliError(
+        `No src/modules/index.ts under "${options.projectDir}". Point --project at the root of a project created from the template.`,
+      );
+    }
+
+    const manifestSource = readFileSync(manifestPath, 'utf8');
+
+    try {
+      const updated = upsertManifestModule(manifestSource, blueprint.module.name);
+
+      if (updated !== manifestSource) {
+        writeFileSync(manifestPath, updated);
+        writeOut(`updated src/modules/index.ts (module "${blueprint.module.name}")`);
+      }
+    } catch (error) {
+      throw new CliError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (blueprint.module.supportedProviders !== 'mongo') {
+    const prismaPath = join(options.projectDir, 'prisma', 'schema.prisma');
+
+    if (!existsSync(prismaPath)) {
+      throw new CliError(
+        `No prisma/schema.prisma under "${options.projectDir}". Point --project at the root of a project created from the template.`,
+      );
+    }
+
+    const source = readFileSync(prismaPath, 'utf8');
+
+    try {
+      writeFileSync(
+        prismaPath,
+        upsertPrismaRegion(source, blueprint.module.name, emitPrismaBlock(blueprint)),
+      );
+    } catch (error) {
+      throw new CliError(error instanceof Error ? error.message : String(error));
+    }
+
+    writeOut(`generated prisma/schema.prisma (region "${blueprint.module.name}")`);
+  }
+
+  recordInProjectManifest(options, blueprint.module.name, projectManifest, generatedHashes);
+}
+
+function parseOptions(args: readonly string[]): GenerationRequest {
   let blueprintPath: string | undefined;
   let projectDir = process.cwd();
   let only: 'all' | 'domain' = 'all';
@@ -195,7 +203,7 @@ function parseOptions(args: readonly string[]): GenerateOptions {
 }
 
 function recordInProjectManifest(
-  options: GenerateOptions,
+  options: GenerationRequest,
   moduleName: string,
   manifest: ProjectManifest,
   generatedHashes: Record<string, string>,
