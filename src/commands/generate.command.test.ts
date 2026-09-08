@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,12 +57,49 @@ function makeProject(name: string): string {
   const projectDir = join(workDir, name);
   mkdirSync(join(projectDir, 'prisma'), { recursive: true });
   mkdirSync(join(projectDir, 'src', 'modules'), { recursive: true });
+  mkdirSync(join(projectDir, '.orangcode'), { recursive: true });
   writeFileSync(
     join(projectDir, 'prisma', 'schema.prisma'),
     'datasource db {\n  provider = "postgresql"\n}\n',
   );
   writeFileSync(join(projectDir, 'src', 'modules', 'index.ts'), MANIFEST);
+  writeFileSync(
+    join(projectDir, '.orangcode', 'manifest.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        template: 'express-typescript',
+        templateVersion: '1.1.0',
+        generatedBy: null,
+        blueprints: [],
+        supportedProviders: ['postgresql', 'mysql', 'mongodb'],
+      },
+      null,
+      2,
+    )}\n`,
+  );
   return projectDir;
+}
+
+function readRecordedEntry(projectDir: string, module: string): {
+  module: string;
+  blueprint: string;
+  generatedFiles: Record<string, string>;
+} {
+  const manifest = JSON.parse(
+    readFileSync(join(projectDir, '.orangcode', 'manifest.json'), 'utf8'),
+  ) as { blueprints: { module: string; blueprint: string; generatedFiles: Record<string, string> }[] };
+  const entry = manifest.blueprints.find((candidate) => candidate.module === module);
+
+  if (entry === undefined) {
+    throw new Error(`No manifest entry for module "${module}"`);
+  }
+
+  return entry;
+}
+
+function sha256(content: Buffer | string): string {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 describe('generate command (end to end)', () => {
@@ -237,5 +275,58 @@ describe('generate command (end to end)', () => {
     expect(() => new GenerateCommand().run(['module', BLUEPRINT_PATH, '--only', 'all'])).toThrow(
       /--only value "all"/,
     );
+  });
+});
+
+describe('generate command records the project manifest', () => {
+  it('copies the blueprint under .orangcode and records the sha256 of every generated file', () => {
+    const projectDir = makeProject('records-manifest');
+
+    expect(new GenerateCommand().run(['module', BLUEPRINT_PATH, '--project', projectDir])).toBe(0);
+
+    const entry = readRecordedEntry(projectDir, 'complaint');
+    expect(entry.blueprint).toBe('.orangcode/blueprints/complaint.blueprint.json');
+    expect(
+      readFileSync(join(projectDir, '.orangcode/blueprints/complaint.blueprint.json'), 'utf8'),
+    ).toBe(readFileSync(BLUEPRINT_PATH, 'utf8'));
+
+    const typesPath = 'src/modules/complaint/types/complaint.types.ts';
+    expect(entry.generatedFiles[typesPath]).toBe(
+      sha256(readFileSync(join(projectDir, typesPath))),
+    );
+    expect(entry.generatedFiles['src/modules/complaint/complaint.module.ts']).toBeDefined();
+    // Skeletons belong to the developer: hashing them would flag every legitimate edit.
+    expect(entry.generatedFiles['src/modules/complaint/services/complaint.service.ts']).toBe(
+      undefined,
+    );
+  });
+
+  it('keeps .orangcode/manifest.json byte-stable across two identical runs', () => {
+    const projectDir = makeProject('manifest-stable');
+    const command = new GenerateCommand();
+    const manifestPath = join(projectDir, '.orangcode', 'manifest.json');
+
+    expect(command.run(['module', BLUEPRINT_PATH, '--project', projectDir])).toBe(0);
+    const first = readFileSync(manifestPath, 'utf8');
+
+    expect(command.run(['module', BLUEPRINT_PATH, '--project', projectDir])).toBe(0);
+    expect(readFileSync(manifestPath, 'utf8')).toBe(first);
+    expect(first.endsWith('\n')).toBe(true);
+  });
+
+  it('refuses a project without .orangcode/manifest.json before writing anything', () => {
+    const projectDir = join(workDir, 'no-project-manifest');
+    mkdirSync(join(projectDir, 'prisma'), { recursive: true });
+    mkdirSync(join(projectDir, 'src', 'modules'), { recursive: true });
+    writeFileSync(
+      join(projectDir, 'prisma', 'schema.prisma'),
+      'datasource db {\n  provider = "postgresql"\n}\n',
+    );
+    writeFileSync(join(projectDir, 'src', 'modules', 'index.ts'), MANIFEST);
+
+    expect(() =>
+      new GenerateCommand().run(['module', BLUEPRINT_PATH, '--project', projectDir]),
+    ).toThrow(/\.orangcode\/manifest\.json/);
+    expect(existsSync(join(projectDir, 'src', 'modules', 'complaint'))).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { loadBlueprintFile } from '../blueprint/load';
 import { blueprintSchema, formatIssuePath } from '../blueprint/schema';
@@ -12,6 +13,12 @@ import {
   upsertManifestModule,
   upsertPrismaRegion,
 } from '../generate';
+import {
+  readProjectManifest,
+  upsertBlueprintEntry,
+  writeProjectManifest,
+} from '../manifest/project-manifest';
+import type { ProjectManifest } from '../manifest/project-manifest';
 import { writeErr, writeOut } from '../output';
 import type { Command } from './command';
 
@@ -57,15 +64,20 @@ export class GenerateCommand implements Command {
     }
 
     const blueprint = result.data;
+    // Read before writing a single file: pointing --project at a non-project directory
+    // must fail without leaving half a module behind.
+    const projectManifest = readProjectManifest(options.projectDir);
     const files =
       options.only === 'domain'
         ? domainFiles(blueprint)
         : [...domainFiles(blueprint), ...moduleFiles(blueprint)];
+    const generatedHashes: Record<string, string> = {};
 
     for (const file of files) {
       const target = join(options.projectDir, file.path);
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, file.content);
+      generatedHashes[file.path] = createHash('sha256').update(file.content).digest('hex');
       writeOut(`generated ${file.path}`);
     }
 
@@ -127,6 +139,8 @@ export class GenerateCommand implements Command {
 
       writeOut(`generated prisma/schema.prisma (region "${blueprint.module.name}")`);
     }
+
+    recordInProjectManifest(options, blueprint.module.name, projectManifest, generatedHashes);
     writeOut(
       options.only === 'domain'
         ? `Module "${blueprint.module.name}" generated (domain wave).`
@@ -178,4 +192,38 @@ function parseOptions(args: readonly string[]): GenerateOptions {
   }
 
   return { blueprintPath, projectDir, only };
+}
+
+function recordInProjectManifest(
+  options: GenerateOptions,
+  moduleName: string,
+  manifest: ProjectManifest,
+  generatedHashes: Record<string, string>,
+): void {
+  const storedBlueprint = `.orangcode/blueprints/${moduleName}.blueprint.json`;
+  const target = join(options.projectDir, storedBlueprint);
+
+  if (resolve(options.blueprintPath) !== resolve(target)) {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, readFileSync(options.blueprintPath));
+    writeOut(`stored ${storedBlueprint}`);
+  }
+
+  const existing = manifest.blueprints.find((entry) => entry.module === moduleName);
+  // A domain-only run rewrites part of the module: merge over the previous hashes instead
+  // of forgetting the module-wave files a full run recorded.
+  const generatedFiles =
+    options.only === 'domain' && existing !== undefined
+      ? { ...existing.generatedFiles, ...generatedHashes }
+      : generatedHashes;
+
+  writeProjectManifest(
+    options.projectDir,
+    upsertBlueprintEntry(manifest, {
+      module: moduleName,
+      blueprint: storedBlueprint,
+      generatedFiles,
+    }),
+  );
+  writeOut(`updated .orangcode/manifest.json (module "${moduleName}")`);
 }
