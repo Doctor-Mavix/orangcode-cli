@@ -2,6 +2,7 @@ import { DoctorCommand } from './doctor.command';
 import { GenerateCommand } from './generate.command';
 import { HelpCommand } from './help.command';
 import { ListCommand } from './list.command';
+import { ReceiveCommand } from './receive.command';
 import { CommandRegistry } from './registry';
 import { RegenerateCommand } from './regenerate.command';
 import { ValidateCommand } from './validate.command';
@@ -15,6 +16,7 @@ export function buildRegistry(): CommandRegistry {
   registry.register(new RegenerateCommand());
   registry.register(new DoctorCommand());
   registry.register(new ListCommand(registry));
+  registry.register(new ReceiveCommand());
   registry.register(new VersionCommand());
   registry.register(new HelpCommand(registry));
 
