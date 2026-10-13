@@ -1,6 +1,6 @@
 # @orangcode/cli
 
-Command-line companion of the [OrangCode Express + TypeScript template](https://github.com/GITHUB_USER/orangcode-express-ts).
+Command-line companion of the [OrangCode Express + TypeScript template](https://github.com/Doctor-Mavix/orangcode-express-ts).
 A module is described once, in a `<module>.blueprint.json` file; the CLI turns it into the
 mechanical part of the module — types, Zod schemas, SQL (Prisma) and MongoDB (Mongoose)
 repositories, controller, module wiring — and keeps the project honest afterwards.
@@ -60,7 +60,7 @@ The golden test needs a checkout of the template. It looks for it next to this r
 skipped and the others still run:
 
 ```bash
-git clone https://github.com/GITHUB_USER/orangcode-express-ts ../template
+git clone https://github.com/Doctor-Mavix/orangcode-express-ts ../template
 ORANGCODE_TEMPLATE_DIR=../template pnpm test
 ```
 
@@ -75,11 +75,11 @@ during the project.
 
 ## The OrangCode TypeScript family
 
-- [orangcode-express-ts](https://github.com/GITHUB_USER/orangcode-express-ts) — the template: Express 5 + strict TypeScript, Postgres (Prisma) or MongoDB (Mongoose)
+- [orangcode-express-ts](https://github.com/Doctor-Mavix/orangcode-express-ts) — the template: Express 5 + strict TypeScript, Postgres (Prisma) or MongoDB (Mongoose)
 - **orangcode-cli** (this repository) — the generator: blueprint → module, byte-identical regeneration
-- [mobile-money-ledger-api](https://github.com/GITHUB_USER/mobile-money-ledger-api) — validation project: wallets, transfers, double-entry ledger (Postgres)
-- [social-feed-api](https://github.com/GITHUB_USER/social-feed-api) — validation project: follow graph and home timeline (MongoDB)
-- [ecommerce-orders-api](https://github.com/GITHUB_USER/ecommerce-orders-api) — validation project: catalogue, cart, orders (Postgres)
+- [mobile-money-ledger-api](https://github.com/Doctor-Mavix/mobile-money-ledger-api) — validation project: wallets, transfers, double-entry ledger (Postgres)
+- [social-feed-api](https://github.com/Doctor-Mavix/social-feed-api) — validation project: follow graph and home timeline (MongoDB)
+- [ecommerce-orders-api](https://github.com/Doctor-Mavix/ecommerce-orders-api) — validation project: catalogue, cart, orders (Postgres)
 
 ## How I built this with Claude Code
 
